@@ -887,6 +887,62 @@ __FILE__: #{path.to_s.inspect}
       end
     end
 
+    context "when a gem monkey patches require" do
+      before do
+        build_repo2 do
+          build_gem "zeitwerk" do |s|
+            s.write("lib/zeitwerk.rb", <<-RUBY)
+              module Kernel
+                module_function
+
+                alias_method :zeitwerk_original_require, :require
+
+                def require(path)
+                  puts "\#{path} used further decorated require"
+
+                  zeitwerk_original_require(path)
+                end
+              end
+            RUBY
+          end
+        end
+
+        install_gemfile <<-G
+          source "#{file_uri_for(gem_repo2)}"
+
+          gem "zeitwerk"
+        G
+      end
+
+      it "does not undo the monkeypatch when `bundle exec`'ing again" do
+        karafka = bundled_app("bin/karafka")
+        create_file(karafka, <<~RUBY)
+          #!#{Gem.ruby}
+
+          # to setup require decorator
+          require "zeitwerk"
+
+          # to setup bundler
+          Bundler.setup(:default)
+
+          # to make sure decorator is still used
+          require "foo"
+        RUBY
+        karafka.chmod(0o777)
+
+        foreman = bundled_app("bin/foreman")
+        create_file(foreman, <<-RUBY)
+          #!#{Gem.ruby}
+
+          puts `bundle exec ./bin/karafka`
+        RUBY
+        foreman.chmod(0o777)
+
+        bundle "exec #{foreman}"
+        expect(out).to eq("foo used further decorated require")
+      end
+    end
+
     context "with a system gem that shadows a default gem" do
       let(:openssl_version) { "99.9.9" }
       let(:expected) { ruby "gem 'openssl', '< 999999'; require 'openssl'; puts OpenSSL::VERSION", :artifice => nil, :raise_on_error => false }
